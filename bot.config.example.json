@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "historyLimit": 12,
+  "eventTimeoutMs": 300000,
+  "backfillIntervalMs": 20000,
+  "cooldownMs": 45000,
+  "minInboundChars": 1,
+  "maxReplyChars": 2000,
+  "dryRun": false,
+  "includeChats": [],
+  "includePatterns": [],
+  "excludeChats": [],
+  "excludePatterns": [
+    "^Archivados$"
+  ],
+  "systemPrompt": "Responde de forma breve, clara y util. Si falta contexto, pide una aclaracion en una sola pregunta.",
+  "logFile": "tmp/bot-events.log",
+  "stateFile": "tmp/bot-state.json"
+}

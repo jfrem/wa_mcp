@@ -1,0 +1,38 @@
+{
+  "name": "wa_mcp",
+  "version": "0.1.0",
+  "description": "Servidor MCP para controlar WhatsApp Web y habilitar automatizaciones con modelos de IA",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc -w",
+    "bot": "node dist/bot.js",
+    "bot:bg:start": "node dist/bot-daemon.js start",
+    "bot:bg:restart": "node dist/bot-daemon.js restart",
+    "bot:bg:stop": "node dist/bot-daemon.js stop",
+    "bot:bg:status": "node dist/bot-daemon.js status",
+    "tmp:status": "node dist/tmp-clean.js status",
+    "tmp:clean": "node dist/tmp-clean.js clean",
+    "tmp:prune": "node dist/tmp-clean.js prune",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node tests/whatsapp-locators.test.mjs",
+    "release:check": "npm run check && npm test"
+  },
+  "keywords": [
+    "mcp",
+    "whatsapp",
+    "whatsapp-web",
+    "automation",
+    "ai-agent"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.3"
+  }
+}
