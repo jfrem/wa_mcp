@@ -7,6 +7,7 @@ export interface ReviewTokenContextOptions {
   maxLength: number;
   messageLimit: number;
   mediaLimit: number;
+  seedReply?: string;
   includeTranscriptions: boolean;
   includeImageDescriptions: boolean;
   direction: "in" | "out" | "any";

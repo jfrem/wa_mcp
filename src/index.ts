@@ -26,6 +26,7 @@ import { summarizeTimelineMessages } from "./timeline-summary.js";
 import { buildReplyDraftFromTimeline, MAX_REPLY_DRAFT_ALTERNATIVES, resolveReplySelection } from "./draft-reply.js";
 import { auditConversations } from "./conversation-audit.js";
 import { buildConversationAttentionBoardFromAudit } from "./conversation-attention-board.js";
+import { getActionableFeed, listActionStrategies } from "./actions/action-engine.js";
 import {
   assertValidReviewToken,
   createReviewToken,
@@ -446,6 +447,7 @@ async function replyWithContext(
   options: {
     mode: "suggest" | "send";
     tone: "neutral" | "warm" | "brief" | "supportive";
+    seedReply?: string;
     alternativeIndex?: number;
     draftSignature?: string;
     selectedReply?: string;
@@ -479,6 +481,7 @@ async function replyWithContext(
 
   const draft = buildReplyDraftFromTimeline(timeline.items, {
     tone: options.tone,
+    seedReply: options.seedReply,
     maxLength: options.maxLength,
     summary: timeline.summary,
     highlights: timeline.highlights,
@@ -516,6 +519,7 @@ function buildReviewTokenContextOptions(options: {
   maxLength: number;
   messageLimit: number;
   mediaLimit: number;
+  seedReply?: string;
   includeTranscriptions: boolean;
   includeImageDescriptions: boolean;
   direction: "in" | "out" | "any";
@@ -531,6 +535,7 @@ function buildReviewTokenContextOptions(options: {
     maxLength: options.maxLength,
     messageLimit: options.messageLimit,
     mediaLimit: options.mediaLimit,
+    seedReply: options.seedReply,
     includeTranscriptions: options.includeTranscriptions,
     includeImageDescriptions: options.includeImageDescriptions,
     direction: options.direction,
@@ -620,6 +625,7 @@ async function confirmReviewedReply(
   const draft = buildReplyDraftFromTimeline(timeline.items, {
     tone: stored.options.tone,
     maxLength: stored.options.maxLength,
+    seedReply: stored.options.seedReply,
     summary: timeline.summary,
     highlights: timeline.highlights,
     maxAlternatives: MAX_REPLY_DRAFT_ALTERNATIVES,
@@ -658,6 +664,7 @@ async function draftReplyWithMediaContext(
     maxLength: number;
     messageLimit: number;
     mediaLimit: number;
+    seedReply?: string;
     includeTranscriptions: boolean;
     includeImageDescriptions: boolean;
     direction: "in" | "out" | "any";
@@ -689,6 +696,7 @@ async function draftReplyWithMediaContext(
     chatKey: chatKey ?? null,
     draft: buildReplyDraftFromTimeline(timeline.items, {
       tone: options.tone,
+      seedReply: options.seedReply,
       maxLength: options.maxLength,
       summary: timeline.summary,
       highlights: timeline.highlights,
@@ -1052,6 +1060,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "get_actionable_feed",
+      description: "Construye un feed priorizado de acciones sugeridas sobre conversaciones visibles, sin ejecutar efectos secundarios ni enviar mensajes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          chat_keys: { type: "array", items: { type: "string" }, description: "Lista explicita de chat_key a evaluar. Si no viene, usa los chats visibles." },
+          strategies: { type: "array", items: { type: "string", enum: listActionStrategies() }, description: "Estrategias activas. Por defecto usa unanswered_message y follow_up_simple." },
+          limit: { type: "number", default: 20, description: "Cantidad maxima de items a devolver. Maximo 50." },
+          message_limit: { type: "number", default: 20, description: "Cantidad de mensajes recientes a leer por chat para detectar acciones." },
+          stale_after_minutes: { type: "number", default: 30, description: "Umbral base compartido para marcar conversaciones como estancadas." },
+          remote_debugging_port: { type: "number", default: DEFAULT_PORT },
+        },
+        required: [],
+      },
+    },
+    {
       name: "audit_conversations",
       description: "Audita conversaciones recientes para detectar chats con parones, preguntas abiertas o seguimientos pendientes sin enviar ningun mensaje.",
       inputSchema: {
@@ -1098,6 +1122,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           chat_key: { type: "string", description: "Clave operativa del chat si ya fue descubierta antes." },
           mode: { type: "string", enum: ["suggest", "send"], default: "suggest" },
           tone: { type: "string", enum: ["neutral", "warm", "brief", "supportive"], default: "neutral" },
+          seed_reply: { type: "string", description: "Texto semilla opcional para fijar la recomendacion operativa inicial." },
           alternative_index: { type: "number", maximum: MAX_REPLY_DRAFT_ALTERNATIVES, description: `Indice 1-based de alternatives[] que quieres usar en vez de recommendedReply. Maximo actual: ${MAX_REPLY_DRAFT_ALTERNATIVES}.` },
           draft_signature: { type: "string", description: "Firma del borrador revisado previamente. Requerida para garantizar que el contexto no cambio antes de enviar una alternativa o texto seleccionado." },
           selected_reply: { type: "string", description: "Texto exacto revisado previamente. Si se envia junto con draft_signature, el servidor valida que siga perteneciendo al borrador actual antes de usarlo." },
@@ -1128,6 +1153,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           chat_index: { type: "number" },
           chat_key: { type: "string", description: "Clave operativa del chat si ya fue descubierta antes." },
           tone: { type: "string", enum: ["neutral", "warm", "brief", "supportive"], default: "neutral" },
+          seed_reply: { type: "string", description: "Texto semilla opcional para fijar la recomendacion operativa inicial." },
           max_length: { type: "number", default: 240, description: "Longitud maxima aproximada del borrador recomendado." },
           message_limit: { type: "number", default: 20, description: "Cantidad de mensajes recientes a inspeccionar." },
           media_limit: { type: "number", default: 2, description: "Cantidad maxima de medios recientes a enriquecer para construir el borrador." },
@@ -1155,6 +1181,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           chat_index: { type: "number" },
           chat_key: { type: "string", description: "Clave operativa del chat si ya fue descubierta antes." },
           tone: { type: "string", enum: ["neutral", "warm", "brief", "supportive"], default: "neutral" },
+          seed_reply: { type: "string", description: "Texto semilla opcional para fijar la recomendacion operativa inicial." },
           max_length: { type: "number", default: 240, description: "Longitud maxima aproximada del borrador recomendado." },
           message_limit: { type: "number", default: 20, description: "Cantidad de mensajes recientes a inspeccionar." },
           media_limit: { type: "number", default: 2, description: "Cantidad maxima de medios recientes a enriquecer para construir el borrador." },
@@ -1183,6 +1210,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           chat_index: { type: "number" },
           chat_key: { type: "string", description: "Clave operativa del chat si ya fue descubierta antes." },
           tone: { type: "string", enum: ["neutral", "warm", "brief", "supportive"], default: "neutral" },
+          seed_reply: { type: "string", description: "Texto semilla opcional para fijar la recomendacion operativa inicial." },
           max_length: { type: "number", default: 240, description: "Longitud maxima aproximada del borrador recomendado." },
           message_limit: { type: "number", default: 20, description: "Cantidad de mensajes recientes a inspeccionar." },
           media_limit: { type: "number", default: 2, description: "Cantidad maxima de medios recientes a enriquecer para construir el borrador." },
@@ -1601,6 +1629,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(JSON.stringify(result, null, 2));
     }
 
+    case "get_actionable_feed": {
+      const actionableFeed = await getActionableFeed(port, {
+        limit: requireBoundedInt(a.limit, "limit", 20, 1, 50),
+        messageLimit: requireBoundedInt(a.message_limit, "message_limit", 20, 1, 100),
+        staleAfterMinutes: requireBoundedInt(a.stale_after_minutes, "stale_after_minutes", 30, 1, 10080),
+        strategies: Array.isArray(a.strategies)
+          ? a.strategies
+              .filter((item): item is string => typeof item === "string")
+              .map((item) => item.trim())
+              .filter(Boolean)
+          : undefined,
+        chatKeys: Array.isArray(a.chat_keys)
+          ? a.chat_keys
+              .filter((item): item is string => typeof item === "string")
+              .map((item) => item.trim())
+              .filter(Boolean)
+          : undefined,
+      });
+      return text(JSON.stringify(actionableFeed, null, 2));
+    }
+
     case "conversation_attention_board": {
       const profile = requireAllowedString(a.profile, "profile", ["generic", "sales"]) as "generic" | "sales" | undefined;
       const scope = requireAllowedString(a.scope, "scope", ["visible", "unread"]) as "visible" | "unread" | undefined;
@@ -1641,6 +1690,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const reply = await replyWithContext(port, chatName, chatIndex, chatKey, {
         mode: mode ?? "suggest",
         tone: tone ?? "neutral",
+        seedReply: typeof a.seed_reply === "string" ? a.seed_reply.trim() || undefined : undefined,
         alternativeIndex,
         draftSignature: typeof a.draft_signature === "string" ? a.draft_signature.trim() || undefined : undefined,
         selectedReply: typeof a.selected_reply === "string" ? a.selected_reply.trim() || undefined : undefined,
@@ -1675,6 +1725,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : undefined;
       const draft = await draftReplyWithMediaContext(port, chatName, chatIndex, chatKey, {
         tone: tone ?? "neutral",
+        seedReply: typeof a.seed_reply === "string" ? a.seed_reply.trim() || undefined : undefined,
         maxLength,
         messageLimit,
         mediaLimit,
@@ -1707,6 +1758,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : undefined;
       const reviewed = await reviewAndSendReply(port, chatName, chatIndex, chatKey, {
         tone: tone ?? "neutral",
+        seedReply: typeof a.seed_reply === "string" ? a.seed_reply.trim() || undefined : undefined,
         maxLength,
         messageLimit,
         mediaLimit,
@@ -1796,6 +1848,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           "get_latest_media_summary",
           "describe_latest_image",
           "get_chat_timeline_summary",
+          "get_actionable_feed",
           "audit_conversations",
           "conversation_attention_board",
           "reply_with_context",

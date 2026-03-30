@@ -1,6 +1,7 @@
 import { listChats, listUnreadChats, readMessages, searchChats } from "./whatsapp.js";
-import { analyzeGenericConversation } from "./conversation-audit-signals.js";
+import { analyzeGenericConversationState } from "./conversation-audit-signals.js";
 import { applySalesProfile } from "./conversation-audit-profiles.js";
+import { buildConversationState } from "./conversation-state/engine.js";
 import type { AuditConversationMessage, AuditConversationsResult, AuditProfile, AuditScope } from "./conversation-audit-types.js";
 
 type ChatSummaryLike = Awaited<ReturnType<typeof listChats>>[number];
@@ -140,13 +141,14 @@ export async function auditConversations(
     try {
       const messages = await readMessages(port, chat.title, options.messageLimit, undefined, { chatKey: chat.chatKey });
       const mappedMessages = mapMessages(messages);
-      const item = analyzeGenericConversation({
+      const conversationState = buildConversationState({
         chatName: chat.title,
         chatKey: chat.chatKey,
         unreadCount: chat.unreadCount,
         messages: mappedMessages,
         staleAfterMinutes: options.staleAfterMinutes,
       });
+      const item = analyzeGenericConversationState(conversationState);
       items.push(options.profile === "sales" ? applySalesProfile(item, mappedMessages) : item);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

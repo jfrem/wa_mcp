@@ -16,6 +16,8 @@ import { analyzeGenericConversation } from "../dist/conversation-audit-signals.j
 import { applySalesProfile } from "../dist/conversation-audit-profiles.js";
 import { summarizeTimelineMessages } from "../dist/timeline-summary.js";
 import { suggestReplyFromTimeline } from "../dist/reply-suggestion.js";
+import { buildConversationState } from "../dist/conversation-state/engine.js";
+import { mapConversationScoreToPriority, scoreConversationState } from "../dist/conversation-state/scoring.js";
 import { MAX_REPLY_DRAFT_ALTERNATIVES, buildReplyDraftFromTimeline, resolveReplySelection, selectReplyFromDraft } from "../dist/draft-reply.js";
 import { assertValidReviewToken, createReviewToken, deleteReviewToken, loadReviewToken, resolveReviewTokenFile, saveReviewToken } from "../dist/review-token-store.js";
 import { buildChatFilterCache, resolveProjectRelativePath, shouldHandleChatName } from "../dist/bot-config.js";
@@ -23,6 +25,9 @@ import { computeLoopBackoffMs } from "../dist/bot-runtime.js";
 import { resolveResponderModulePath } from "../dist/bot-responder.js";
 import { resolveHealthyProcess } from "../dist/bot-daemon-health.js";
 import { cleanTmpDir, getTmpDirSummary } from "../dist/tmp-maintenance.js";
+import { getActionableFeed, listActionStrategies } from "../dist/actions/action-engine.js";
+import { unansweredMessageStrategy } from "../dist/actions/strategies/unanswered-message.js";
+import { followUpSimpleStrategy } from "../dist/actions/strategies/follow-up-simple.js";
 
 async function run(name, fn) {
   try {
@@ -68,6 +73,11 @@ await run("example bot config uses repo-root tmp paths", () => {
 await run("README documents repo-root tmp config path", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /tmp\/bot\.config\.json/);
+});
+
+await run("reply_with_context MCP schema declares seed_reply", () => {
+  const indexSource = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(indexSource, /name:\s*"reply_with_context"[\s\S]*seed_reply:\s*\{\s*type:\s*"string"/);
 });
 
 await run("bot path resolver strips redundant project directory prefix from relative tmp paths", () => {
@@ -369,6 +379,414 @@ await run("audit target selection uses query matches when no explicit chat_keys 
   );
 });
 
+await run("conversation state computes shared waitingOn, idleMinutes and signals", () => {
+  const state = buildConversationState({
+    chatName: "Cliente demo",
+    chatKey: "volatile:title::Cliente demo",
+    unreadCount: 2,
+    staleAfterMinutes: 30,
+    now: Date.now(),
+    messages: [
+      { index: 1, direction: "out", text: "Hola, cuentame", meta: formatMetaMinutesAgo(80) },
+      { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(47) },
+    ],
+  });
+
+  assert.equal(state.waitingOn, "us");
+  assert.equal(state.idleMinutes !== null && state.idleMinutes >= 40, true);
+  assert.equal(state.signals.some((signal) => signal.type === "open_question"), true);
+  assert.equal(state.signals.some((signal) => signal.type === "awaiting_business_response"), true);
+});
+
+await run("conversation scoring maps shared signals to high priority when business owes a response", () => {
+  const state = buildConversationState({
+    chatName: "Cliente demo",
+    chatKey: "volatile:title::Cliente demo",
+    unreadCount: 2,
+    staleAfterMinutes: 30,
+    now: Date.now(),
+    messages: [
+      { index: 1, direction: "out", text: "Hola, cuentame", meta: formatMetaMinutesAgo(80) },
+      { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(47) },
+    ],
+  });
+  const scored = scoreConversationState(state);
+
+  assert.equal(scored.score >= 0.55, true);
+  assert.equal(mapConversationScoreToPriority(scored.score), "high");
+});
+
+await run("conversation scoring keeps a healthy waiting-on-them chat at low priority", () => {
+  const state = buildConversationState({
+    chatName: "Cliente demo",
+    chatKey: "volatile:title::Cliente demo",
+    unreadCount: 0,
+    staleAfterMinutes: 30,
+    now: Date.now(),
+    messages: [
+      { index: 1, direction: "in", text: "Perfecto", meta: formatMetaMinutesAgo(20) },
+      { index: 2, direction: "out", text: "Quedo atento a tu confirmacion", meta: formatMetaMinutesAgo(10) },
+    ],
+  });
+  const scored = scoreConversationState(state);
+
+  assert.equal(scored.score < 0.3, true);
+  assert.equal(mapConversationScoreToPriority(scored.score), "low");
+});
+
+await run("follow-up scoring boost uses the shared stale_after_minutes threshold", () => {
+  const state = buildConversationState({
+    chatName: "Cliente demo",
+    chatKey: "volatile:title::Cliente demo",
+    unreadCount: 0,
+    staleAfterMinutes: 30,
+    now: Date.now(),
+    messages: [
+      { index: 1, direction: "in", text: "Perfecto, quedo atento", meta: formatMetaMinutesAgo(140) },
+      { index: 2, direction: "out", text: "Quedo atento a tu confirmacion", meta: formatMetaMinutesAgo(100) },
+    ],
+  });
+  const scored = scoreConversationState(state);
+  const followUpPriority = followUpSimpleStrategy.detect({ conversationState: state })[0]?.priority ?? 0;
+
+  assert.equal(scored.score >= 0.2, true);
+  assert.equal(followUpPriority > scored.score + 0.1, true);
+});
+
+await run("action strategy registry exposes default strategies", () => {
+  assert.deepEqual(listActionStrategies(), ["unanswered_message", "follow_up_simple"]);
+});
+
+await run("unanswered_message strategy detects latest inbound unattended message", () => {
+  const actions = unansweredMessageStrategy.detect({
+    conversationState: buildConversationState({
+      chatName: "Cliente A",
+      chatKey: "key-1",
+      unreadCount: 2,
+      staleAfterMinutes: 30,
+      now: Date.now(),
+      messages: [
+        { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(110, "negocio") },
+        { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(40, "cliente") },
+      ],
+    }),
+  });
+
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]?.type, "reply");
+  assert.equal(actions[0]?.label, "Responder ahora");
+  assert.equal(actions[0]?.priority >= 0 && actions[0]?.priority <= 1, true);
+  assert.match(actions[0]?.reason ?? "", /sin respuesta|esperando/i);
+  assert.match(actions[0]?.preview.text ?? "", /Todavia esta disponible/i);
+});
+
+await run("unanswered_message strategy ignores chats whose latest relevant message is outbound", () => {
+  const actions = unansweredMessageStrategy.detect({
+    conversationState: buildConversationState({
+      chatName: "Cliente B",
+      chatKey: "key-2",
+      unreadCount: 0,
+      staleAfterMinutes: 30,
+      now: Date.now(),
+      messages: [
+        { index: 1, direction: "in", text: "Me compartes el precio?", meta: formatMetaMinutesAgo(180, "cliente") },
+        { index: 2, direction: "out", text: "Claro, ya te paso el precio", meta: formatMetaMinutesAgo(170, "negocio") },
+      ],
+    }),
+  });
+
+  assert.equal(actions.length, 0);
+});
+
+await run("follow_up_simple strategy detects stale outbound waiting on customer", () => {
+  const actions = followUpSimpleStrategy.detect({
+    conversationState: buildConversationState({
+      chatName: "Cliente C",
+      chatKey: "key-3",
+      unreadCount: 0,
+      staleAfterMinutes: 30,
+      now: Date.now(),
+      messages: [
+        { index: 1, direction: "in", text: "Me mandas el precio?", meta: formatMetaMinutesAgo(500, "cliente") },
+        { index: 2, direction: "out", text: "Claro, ya te paso el precio", meta: formatMetaMinutesAgo(360, "negocio") },
+      ],
+    }),
+  });
+
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]?.type, "follow_up");
+  assert.equal(actions[0]?.label, "Hacer follow-up");
+  assert.equal(actions[0]?.priority >= 0 && actions[0]?.priority <= 1, true);
+  assert.match(actions[0]?.reason ?? "", /no respondio|reactivar/i);
+});
+
+await run("follow_up_simple strategy ignores chats with unread inbound activity", () => {
+  const actions = followUpSimpleStrategy.detect({
+    conversationState: buildConversationState({
+      chatName: "Cliente D",
+      chatKey: "key-4",
+      unreadCount: 1,
+      staleAfterMinutes: 30,
+      now: Date.now(),
+      messages: [
+        { index: 1, direction: "out", text: "Quedo atento", meta: formatMetaMinutesAgo(400, "negocio") },
+        { index: 2, direction: "in", text: "Hola?", meta: formatMetaMinutesAgo(120, "cliente") },
+      ],
+    }),
+  });
+
+  assert.equal(actions.length, 0);
+});
+
+await run("follow_up_simple strategy derives staleness threshold from shared conversation state", () => {
+  const baseMessages = [
+    { index: 1, direction: "in", text: "Me mandas el precio?", meta: formatMetaMinutesAgo(140, "cliente") },
+    { index: 2, direction: "out", text: "Claro, ya te paso el precio", meta: formatMetaMinutesAgo(100, "negocio") },
+  ];
+  const eligibleState = buildConversationState({
+    chatName: "Cliente follow-up",
+    chatKey: "key-follow-up-1",
+    unreadCount: 0,
+    staleAfterMinutes: 30,
+    now: Date.now(),
+    messages: baseMessages,
+  });
+  const notYetStaleState = buildConversationState({
+    chatName: "Cliente follow-up",
+    chatKey: "key-follow-up-2",
+    unreadCount: 0,
+    staleAfterMinutes: 40,
+    now: Date.now(),
+    messages: baseMessages,
+  });
+
+  assert.equal(followUpSimpleStrategy.detect({ conversationState: eligibleState }).length, 1);
+  assert.equal(followUpSimpleStrategy.detect({ conversationState: notYetStaleState }).length, 0);
+});
+
+await run("audit and reply actions stay aligned on a shared conversation state", () => {
+  const conversationState = buildConversationState({
+    chatName: "Cliente A",
+    chatKey: "key-1",
+    unreadCount: 2,
+    staleAfterMinutes: 30,
+    now: Date.now(),
+    messages: [
+      { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(110, "negocio") },
+      { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(40, "cliente") },
+    ],
+  });
+
+  const auditItem = analyzeGenericConversation({
+    chatName: conversationState.chatName,
+    chatKey: conversationState.chatKey ?? undefined,
+    unreadCount: conversationState.unreadCount,
+    messages: conversationState.messages,
+    staleAfterMinutes: conversationState.staleAfterMinutes,
+  });
+  const actions = unansweredMessageStrategy.detect({ conversationState });
+
+  assert.equal(auditItem.waitingOn, "us");
+  assert.equal(auditItem.priority, "high");
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]?.type, "reply");
+  assert.match(actions[0]?.reason ?? "", /sin respuesta|esperando/i);
+});
+
+await run("audit and get_actionable_feed stay aligned for stale follow-up eligibility", async () => {
+  const messages = [
+    { index: 1, direction: "in", text: "Perfecto, quedo atento", meta: formatMetaMinutesAgo(140, "cliente") },
+    { index: 2, direction: "out", text: "Quedo atento a tu confirmacion", meta: formatMetaMinutesAgo(100, "negocio") },
+  ];
+  const auditItem = analyzeGenericConversation({
+    chatName: "Cliente follow-up",
+    chatKey: "key-follow-up-feed",
+    unreadCount: 0,
+    staleAfterMinutes: 30,
+    messages,
+  });
+  const result = await getActionableFeed(9222, {
+    limit: 5,
+    strategies: ["follow_up_simple"],
+    staleAfterMinutes: 30,
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-follow-up-feed", title: "Cliente follow-up", unreadCount: 0, lastMessagePreview: "Quedo atento a tu confirmacion", selected: false },
+    ]),
+    readMessagesFn: async () => messages,
+    now: () => Date.now(),
+  });
+
+  assert.equal(auditItem.waitingOn, "them");
+  assert.equal(auditItem.stallType, "waiting_on_them");
+  assert.equal(result.data.length, 1);
+  assert.equal(result.data[0]?.actions[0]?.type, "follow_up");
+});
+
+await run("get_actionable_feed respects stale_after_minutes when evaluating follow-up actions", async () => {
+  const result = await getActionableFeed(9222, {
+    limit: 5,
+    strategies: ["follow_up_simple"],
+    staleAfterMinutes: 40,
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-follow-up-feed", title: "Cliente follow-up", unreadCount: 0, lastMessagePreview: "Quedo atento a tu confirmacion", selected: false },
+    ]),
+    readMessagesFn: async () => ([
+      { index: 1, direction: "in", text: "Perfecto, quedo atento", meta: formatMetaMinutesAgo(140, "cliente") },
+      { index: 2, direction: "out", text: "Quedo atento a tu confirmacion", meta: formatMetaMinutesAgo(100, "negocio") },
+    ]),
+    now: () => Date.now(),
+  });
+
+  assert.equal(result.data.length, 0);
+});
+
+await run("get_actionable_feed warns on unknown strategies and limits sorted results", async () => {
+  const result = await getActionableFeed(9222, {
+    limit: 1,
+    messageLimit: 37,
+    staleAfterMinutes: 30,
+    strategies: ["unknown_strategy", "unanswered_message", "follow_up_simple"],
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-1", title: "Cliente A", unreadCount: 2, lastMessagePreview: "Todavia esta disponible?", selected: false },
+      { index: 2, chatKey: "key-2", title: "Cliente B", unreadCount: 0, lastMessagePreview: "Te paso el precio", selected: false },
+    ]),
+    readMessagesFn: async (_port, chatName) => (
+      chatName === "Cliente A"
+        ? [
+            { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(110, "negocio") },
+            { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(40, "cliente") },
+          ]
+        : [
+            { index: 1, direction: "in", text: "Me mandas el precio?", meta: formatMetaMinutesAgo(500, "cliente") },
+            { index: 2, direction: "out", text: "Claro, ya te paso el precio", meta: formatMetaMinutesAgo(360, "negocio") },
+          ]
+    ),
+    now: () => Date.now(),
+  });
+
+  assert.equal(result.data.length, 1);
+  assert.equal(result.meta.has_more, true);
+  assert.match(result.warnings.join(" "), /unknown_strategy/);
+  assert.equal(result.data[0]?.priority >= 0 && result.data[0]?.priority <= 1, true);
+  assert.match(result.data[0]?.actions[0]?.actionId ?? "", /^[a-f0-9]{16}$/);
+  assert.equal(typeof result.data[0]?.actions[0]?.chatKey, "string");
+  assert.equal(typeof result.data[0]?.actions[0]?.type, "string");
+  assert.equal(typeof result.data[0]?.actions[0]?.label, "string");
+  assert.equal(typeof result.data[0]?.actions[0]?.reason, "string");
+  assert.equal(typeof result.data[0]?.actions[0]?.strategy, "string");
+  assert.equal(result.data[0]?.actions[0]?.recommendedTool, "review_reply_for_confirmation");
+  assert.equal(result.data[0]?.actions[0]?.previewTool, "draft_reply_with_media_context");
+  assert.equal(result.data[0]?.actions[0]?.confirmTool, "confirm_reviewed_reply");
+  assert.equal(result.data[0]?.actions[0]?.executionMode, "review_then_confirm");
+  assert.equal(typeof result.data[0]?.actions[0]?.preview?.text, "string");
+  assert.equal(typeof result.data[0]?.actions[0]?.recommendedArgs?.chat_key, "string");
+  assert.equal(typeof result.data[0]?.actions[0]?.previewArgs?.chat_key, "string");
+  assert.equal(result.data[0]?.actions[0]?.recommendedArgs?.message_limit, 37);
+  assert.equal(result.data[0]?.actions[0]?.previewArgs?.message_limit, 37);
+  assert.equal(typeof result.data[0]?.actions[0]?.recommendedArgs?.review_ttl_seconds, "number");
+  assert.equal(result.data[0]?.actions[0]?.requiresHumanReview, true);
+  assert.equal(Array.isArray(result.data[0]?.actions[0]?.evidence), true);
+});
+
+await run("get_actionable_feed exposes the frozen minimum SuggestedAction contract", async () => {
+  const result = await getActionableFeed(9222, {
+    limit: 1,
+    staleAfterMinutes: 30,
+    strategies: ["unanswered_message"],
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-1", title: "Cliente A", unreadCount: 2, lastMessagePreview: "Todavia esta disponible?", selected: false },
+    ]),
+    readMessagesFn: async () => ([
+      { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(110, "negocio") },
+      { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(40, "cliente") },
+    ]),
+    now: () => Date.now(),
+  });
+
+  const action = result.data[0]?.actions[0];
+  assert.ok(action);
+  assert.deepEqual(
+    Object.keys(action).filter((key) => [
+      "actionId",
+      "chatKey",
+      "type",
+      "label",
+      "priority",
+      "reason",
+      "preview",
+      "strategy",
+      "recommendedTool",
+      "recommendedArgs",
+      "executionMode",
+      "requiresHumanReview",
+    ].includes(key)).sort(),
+    [
+      "actionId",
+      "chatKey",
+      "executionMode",
+      "label",
+      "preview",
+      "priority",
+      "reason",
+      "recommendedArgs",
+      "recommendedTool",
+      "requiresHumanReview",
+      "strategy",
+      "type",
+    ],
+  );
+  assert.equal(action?.recommendedTool, "review_reply_for_confirmation");
+  assert.notEqual(action?.recommendedTool, "send_message");
+  assert.equal(action?.executionMode, "review_then_confirm");
+  assert.equal(action?.requiresHumanReview, true);
+});
+
+await run("get_actionable_feed preserves follow-up intent in recommended execution args", async () => {
+  const result = await getActionableFeed(9222, {
+    limit: 5,
+    strategies: ["follow_up_simple"],
+    staleAfterMinutes: 30,
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-follow-up-seed", title: "Cliente follow-up", unreadCount: 0, lastMessagePreview: "Quedo atento a tu confirmacion", selected: false },
+    ]),
+    readMessagesFn: async () => ([
+      { index: 1, direction: "in", text: "Perfecto, quedo atento", meta: formatMetaMinutesAgo(140, "cliente") },
+      { index: 2, direction: "out", text: "Quedo atento a tu confirmacion", meta: formatMetaMinutesAgo(100, "negocio") },
+    ]),
+    now: () => Date.now(),
+  });
+
+  const action = result.data[0]?.actions[0];
+  assert.equal(action?.type, "follow_up");
+  assert.equal(action?.recommendedArgs?.seed_reply, action?.preview.text);
+  assert.equal(action?.previewArgs?.seed_reply, action?.preview.text);
+});
+
+await run("get_actionable_feed returns empty data when all requested strategies are unknown", async () => {
+  const result = await getActionableFeed(9222, {
+    staleAfterMinutes: 30,
+    strategies: ["unknown_strategy"],
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-1", title: "Cliente A", unreadCount: 2, lastMessagePreview: "Todavia esta disponible?", selected: false },
+    ]),
+    readMessagesFn: async () => ([
+      { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(110, "negocio") },
+      { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(40, "cliente") },
+    ]),
+    now: () => Date.now(),
+  });
+
+  assert.equal(result.data.length, 0);
+  assert.equal(result.meta.has_more, false);
+  assert.match(result.warnings.join(" "), /unknown_strategy/);
+});
+
 await run("sales profile upgrades high-intent inbound lead to high priority", () => {
   const messages = [
     { index: 1, direction: "out", text: "Hola, te ayudo", meta: formatMetaMinutesAgo(40) },
@@ -515,6 +933,33 @@ await run("conversation attention board groups items into actionable buckets", (
   assert.equal(board.topActions.length >= 2, true);
 });
 
+await run("conversation attention board stays aligned with an audited high-priority shared-state item", () => {
+  const auditItem = analyzeGenericConversation({
+    chatName: "Lead caliente",
+    chatKey: "k-audit",
+    unreadCount: 1,
+    staleAfterMinutes: 30,
+    messages: [
+      { index: 1, direction: "out", text: "Hola, te ayudo", meta: formatMetaMinutesAgo(80) },
+      { index: 2, direction: "in", text: "Como pago? pasame el link", meta: formatMetaMinutesAgo(45) },
+    ],
+  });
+  const board = buildConversationAttentionBoard({
+    ok: true,
+    profile: "generic",
+    scope: "visible",
+    count: 1,
+    warnings: [],
+    items: [auditItem],
+  });
+
+  assert.equal(auditItem.priority, "high");
+  assert.equal(auditItem.waitingOn, "us");
+  assert.equal(board.summary.urgentNow, 1);
+  assert.equal(board.buckets.urgentNow[0]?.chatKey, "k-audit");
+  assert.equal(board.summary.monitoring, 0);
+});
+
 await run("conversation attention board keeps non-healthy uncategorized items in monitoring bucket", () => {
   const board = buildConversationAttentionBoard({
     ok: true,
@@ -609,6 +1054,20 @@ await run("reply draft uses image metadata when latest inbound event is an image
   assert.equal(draft.basedOn.eventType, "image");
   assert.equal(draft.basedOn.usedImageDescription, true);
   assert.match(draft.recommendedReply, /imagen/i);
+});
+
+await run("reply draft preserves a provided seed reply as the recommended option", () => {
+  const draft = buildReplyDraftFromTimeline([
+    { direction: "in", text: "Perfecto, quedo atento" },
+    { direction: "out", text: "Quedo atento a tu confirmacion" },
+  ], {
+    tone: "warm",
+    maxLength: 240,
+    seedReply: "Hola, Cliente follow-up. Retomo esta conversacion por aqui para ayudarte a cerrar el siguiente paso. Si quieres, te comparto el detalle ahora mismo.",
+  });
+
+  assert.match(draft.recommendedReply, /Retomo esta conversacion por aqui/i);
+  assert.match(draft.reasoningSummary, /semilla de respuesta/i);
 });
 
 await run("reply draft can select a concrete alternative by 1-based index", () => {

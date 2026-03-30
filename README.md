@@ -66,6 +66,11 @@ Luego abre `https://web.whatsapp.com` para que escanees el QR si hace falta.
 
 ## Tools MCP
 
+Nota general:
+
+- las tools que interactuan con WhatsApp Web aceptan `remote_debugging_port` opcional;
+- si no lo envias, el servidor usa `WHATSAPP_WEB_CDP_PORT` o el default `9222`.
+
 ### `auto_auth_whatsapp_web`
 
 Conecta o lanza Chrome con CDP y espera a que WhatsApp Web quede autenticado.
@@ -432,6 +437,79 @@ Entrada:
 - usa los mismos parametros operativos de `audit_conversations`
 - misma precedencia de alcance: `chat_keys` -> `query` -> `scope`
 
+### `get_actionable_feed`
+
+Construye un feed read-only de acciones sugeridas a partir del mismo `conversation-state` compartido por auditoria y scoring.
+
+Devuelve:
+
+- `data`
+- `meta.has_more`
+- `warnings`
+
+Cada item incluye:
+
+- `chatId`
+- `priority`
+- `reason`
+- `summary`
+- `actions`
+
+Cada `SuggestedAction` expuesto por el feed incluye como contrato minimo:
+
+- `actionId`
+- `chatKey`
+- `type`
+- `label`
+- `priority`
+- `reason`
+- `preview`
+- `strategy`
+- `recommendedTool`
+- `recommendedArgs`
+- `executionMode`
+- `requiresHumanReview`
+
+Y puede incluir adicionalmente:
+
+- `kind`
+- `confidence`
+- `evidence`
+- `generatedAt`
+- `expiresAt`
+- `cooldownUntil`
+- `previewTool`
+- `previewArgs`
+- `confirmTool`
+- `blockingSignals`
+
+Comportamiento:
+
+- no envia mensajes;
+- no modifica chats;
+- usa `conversation-state` como base compartida con `audit_conversations`;
+- las acciones de respuesta apuntan al flujo seguro `review_then_confirm`;
+- `recommendedTool` nunca apunta a envio directo en el release actual.
+
+Parámetros útiles:
+
+- `chat_keys`: lista explicita de `chat_key`; si no viene, usa chats visibles
+- `strategies`: estrategias activas; por defecto `unanswered_message` y `follow_up_simple`
+- `limit`: cantidad maxima de items devueltos; maximo `50`
+- `message_limit`: ventana de mensajes recientes usada tanto para detectar la accion como para hidratar `previewArgs` y `recommendedArgs`
+- `stale_after_minutes`: umbral base compartido con `audit_conversations` para marcar conversaciones estancadas y habilitar follow-ups
+
+Errores parciales:
+
+- estrategia desconocida -> warning
+- chat no visible -> warning
+- fallo de lectura por chat -> warning parcial y el resto del lote continua
+
+Notas de ejecucion sugerida:
+
+- para acciones `follow_up`, el feed incluye `seed_reply` dentro de `previewArgs` y `recommendedArgs`;
+- `draft_reply_with_media_context` y `review_reply_for_confirmation` consumen `seed_reply` para conservar la intencion concreta sugerida por la accion.
+
 ### `reply_with_context`
 
 Construye una respuesta sugerida a partir del contexto reciente del chat.
@@ -448,6 +526,7 @@ Parámetros útiles:
 
 - `mode`: `suggest` o `send`; por defecto `suggest`
 - `tone`: `neutral`, `warm`, `brief` o `supportive`
+- `seed_reply`: texto semilla opcional para fijar una recomendacion operativa concreta
 - `max_length`: longitud maxima aproximada de la respuesta sugerida
 - `alternative_index`: indice 1-based de `alternatives[]`; maximo actual `3`
 - `draft_signature`: firma del borrador revisado previamente

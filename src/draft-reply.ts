@@ -41,6 +41,7 @@ export interface ReplyDraftOptions extends ReplySuggestionOptions {
   summary?: string;
   highlights?: string[];
   maxAlternatives?: number;
+  seedReply?: string;
 }
 
 export interface ReplyDraftSelectionInput {
@@ -153,6 +154,10 @@ function buildReasoningSummary(
     parts.push(`Highlights: ${options.highlights.slice(0, 2).join(" | ")}`);
   }
 
+  if (options.seedReply?.trim()) {
+    parts.push("La recomendacion conserva una semilla de respuesta proporcionada por la capa operativa.");
+  }
+
   return parts.join(" ");
 }
 
@@ -194,7 +199,9 @@ export function buildReplyDraftFromTimeline(
   const tone = options.tone ?? "neutral";
   const maxLength = options.maxLength ?? 240;
   const latestIncoming = latestIncomingEvent(messages);
-  const recommendedReply = suggestReplyFromTimeline(messages, { tone, maxLength });
+  const recommendedReply = options.seedReply?.trim()
+    ? truncate(options.seedReply.trim(), maxLength)
+    : suggestReplyFromTimeline(messages, { tone, maxLength });
   const recommendedOptionId = buildOptionId("recommended", "recommended", recommendedReply);
   const alternatives = dedupeAlternatives(
     ALL_TONES
