@@ -347,6 +347,7 @@ await run("audit target selection prioritizes explicit chat_keys over query and 
   });
 
   assert.equal(selection.scope, "chat_keys");
+  assert.deepEqual(selection.warnings, []);
   assert.deepEqual(
     selection.targets.map((item) => ({ title: item.title, chatKey: item.chatKey })),
     [
@@ -354,6 +355,23 @@ await run("audit target selection prioritizes explicit chat_keys over query and 
       { title: "Cliente A", chatKey: "key-1" },
     ],
   );
+});
+
+await run("audit target selection omits off-screen chat_keys with explicit warnings", () => {
+  const selection = selectAuditTargets({
+    maxChats: 5,
+    scope: "visible",
+    chatKeys: ["key-offscreen", "key-1"],
+    visibleChats: [
+      { index: 1, chatKey: "key-1", title: "Cliente A", unreadCount: 3, lastMessagePreview: "", selected: false },
+    ],
+    unreadChats: [],
+    searchResults: [],
+  });
+
+  assert.equal(selection.scope, "chat_keys");
+  assert.deepEqual(selection.targets.map((item) => item.chatKey), ["key-1"]);
+  assert.match(selection.warnings.join(" "), /key-offscreen/);
 });
 
 await run("audit target selection uses query matches when no explicit chat_keys are provided", () => {
@@ -373,6 +391,7 @@ await run("audit target selection uses query matches when no explicit chat_keys 
   });
 
   assert.equal(selection.scope, "query");
+  assert.deepEqual(selection.warnings, []);
   assert.deepEqual(
     selection.targets.map((item) => item.chatKey),
     ["key-4", "key-5"],
@@ -765,6 +784,68 @@ await run("get_actionable_feed preserves follow-up intent in recommended executi
   assert.equal(action?.type, "follow_up");
   assert.equal(action?.recommendedArgs?.seed_reply, action?.preview.text);
   assert.equal(action?.previewArgs?.seed_reply, action?.preview.text);
+});
+
+await run("get_actionable_feed preserves reply intent in recommended execution args", async () => {
+  const result = await getActionableFeed(9222, {
+    limit: 5,
+    strategies: ["unanswered_message"],
+    staleAfterMinutes: 30,
+  }, {
+    listChatsFn: async () => ([
+      { index: 1, chatKey: "key-reply-seed", title: "Cliente reply", unreadCount: 1, lastMessagePreview: "Necesito ayuda urgente", selected: false },
+    ]),
+    readMessagesFn: async () => ([
+      { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(120, "negocio") },
+      { index: 2, direction: "in", text: "Necesito ayuda urgente con esto porque no me esta funcionando como esperaba", meta: formatMetaMinutesAgo(40, "cliente") },
+    ]),
+    now: () => Date.now(),
+  });
+
+  const action = result.data[0]?.actions[0];
+  assert.equal(action?.type, "reply");
+  assert.equal(action?.recommendedArgs?.seed_reply, action?.preview.text);
+  assert.equal(action?.previewArgs?.seed_reply, action?.preview.text);
+});
+
+await run("get_actionable_feed prioritizes across all retrieved visible chats", async () => {
+  const visibleChats = Array.from({ length: 40 }, (_, index) => ({
+    index: index + 1,
+    chatKey: `key-${index + 1}`,
+    title: `Chat ${index + 1}`,
+    unreadCount: 0,
+    lastMessagePreview: "",
+    selected: false,
+  }));
+  visibleChats[39] = {
+    index: 40,
+    chatKey: "key-40",
+    title: "Chat 40",
+    unreadCount: 2,
+    lastMessagePreview: "Todavia esta disponible?",
+    selected: false,
+  };
+  const result = await getActionableFeed(9222, {
+    limit: 5,
+    strategies: ["unanswered_message"],
+    staleAfterMinutes: 30,
+  }, {
+    listChatsFn: async () => visibleChats,
+    readMessagesFn: async (_port, chatName) => (
+      chatName === "Chat 40"
+        ? [
+            { index: 1, direction: "out", text: "Hola", meta: formatMetaMinutesAgo(120, "negocio") },
+            { index: 2, direction: "in", text: "Todavia esta disponible?", meta: formatMetaMinutesAgo(40, "cliente") },
+          ]
+        : [
+            { index: 1, direction: "out", text: "Seguimos en contacto", meta: formatMetaMinutesAgo(20, "negocio") },
+          ]
+    ),
+    now: () => Date.now(),
+  });
+
+  assert.equal(result.data.length, 1);
+  assert.equal(result.data[0]?.chatId, "key-40");
 });
 
 await run("get_actionable_feed returns empty data when all requested strategies are unknown", async () => {

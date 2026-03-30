@@ -14,6 +14,35 @@ Servidor MCP para controlar `https://web.whatsapp.com` desde clientes compatible
 - envío de mensajes desde WhatsApp Web;
 - runner opcional de auto-respuesta con un módulo `generateReply(context)`.
 
+## Casos de uso
+
+Estos son casos de uso concretos que el proyecto ya soporta o habilita directamente sobre WhatsApp Web:
+
+1. Auditar conversaciones para identificar patrones que anteceden el cierre de ventas.
+2. Detectar leads con alta intención de compra a partir de señales como precio, disponibilidad, pago o entrega.
+3. Encontrar conversaciones estancadas que necesitan seguimiento comercial inmediato.
+4. Detectar preguntas abiertas de clientes que siguen sin respuesta.
+5. Detectar promesas comerciales pendientes, como envío de precio, link, catálogo o confirmación.
+6. Priorizar chats con mayor probabilidad de conversión para enfocar primero el esfuerzo del equipo.
+7. Clasificar conversaciones por etapa comercial, por ejemplo exploración, interés, objeción o cierre.
+8. Detectar objeciones frecuentes para mejorar scripts, manejo de dudas y argumentos de venta.
+9. Medir tiempos de respuesta del negocio y relacionarlos con riesgo de pérdida o cierre.
+10. Identificar cuándo conviene reactivar una conversación que quedó esperando al cliente.
+11. Generar seguimientos sugeridos para leads interesados que dejaron de responder.
+12. Proponer respuestas contextualizadas para acelerar atención comercial sin perder control humano.
+13. Crear borradores revisables antes de enviar respuestas sensibles o de cierre.
+14. Confirmar respuestas en un flujo de doble paso con `reviewToken` antes del envío real.
+15. Analizar notas de voz e imágenes para no perder contexto relevante dentro del proceso de venta.
+16. Resumir el historial reciente de un chat para que un vendedor retome contexto rápidamente.
+17. Construir un tablero operativo con urgencias, promesas pendientes y oportunidades de alto valor.
+18. Detectar conversaciones con riesgo de pérdida por demora, falta de seguimiento o secuencia comercial deficiente.
+19. Estandarizar criterios de priorización entre vendedores, agentes o automatizaciones.
+20. Generar insights accionables sobre variables que influyen en conversión, productividad y cierre de ventas.
+
+Caso destacado:
+
+- auditoría conversacional para optimización comercial: el sistema inspecciona conversaciones de WhatsApp para detectar señales como preguntas abiertas, promesas pendientes, objeciones, intención de compra, tiempos de espera y conversaciones estancadas. A partir de ese análisis, produce prioridades, seguimiento sugerido e insights que ayudan a optimizar estrategia comercial, elevar conversión y mejorar productividad operativa.
+
 ## Alcance del MVP
 
 Este proyecto implementa un MVP operativo adaptado a WhatsApp Web:

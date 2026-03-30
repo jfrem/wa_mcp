@@ -51,7 +51,7 @@ function resolveStrategies(requested: string[] | undefined, warnings: string[]):
 
 function resolveTargetChats(visibleChats: ChatSummary[], chatKeys: string[] | undefined, warnings: string[], limit: number): ChatSummary[] {
   if (!chatKeys?.length) {
-    return visibleChats.slice(0, Math.max(limit * 3, 30));
+    return visibleChats;
   }
 
   const byChatKey = new Map(visibleChats.map((chat) => [chat.chatKey, chat] as const));
@@ -97,7 +97,7 @@ function buildPreviewArgs(chatKey: string, kind: string, messageLimit: number): 
 
 function buildActionSeedReply(action: DetectedAction): string | undefined {
   const previewText = action.preview.text.trim();
-  return action.type === "follow_up" && previewText ? previewText : undefined;
+  return previewText || undefined;
 }
 
 function buildReviewArgs(chatKey: string, kind: string, messageLimit: number): Record<string, unknown> {

@@ -59,23 +59,30 @@ export function selectAuditTargets(args: {
   visibleChats: ChatSummaryLike[];
   unreadChats: ChatSummaryLike[];
   searchResults: SearchResultLike[];
-}): { scope: AuditScope; targets: AuditTarget[] } {
+}): { scope: AuditScope; targets: AuditTarget[]; warnings: string[] } {
+  const warnings: string[] = [];
   const normalizedChatKeys = (args.chatKeys ?? []).map((item) => item.trim()).filter(Boolean);
   if (normalizedChatKeys.length) {
     const visibleLookup = new Map(args.visibleChats.map((chat) => [chat.chatKey, chat] as const));
+    const missingChatKeys = normalizedChatKeys.filter((chatKey) => !visibleLookup.has(chatKey));
+    for (const chatKey of missingChatKeys) {
+      warnings.push(`chat_key omitido por no estar visible y no poder reabrirse de forma fiable por clave sola: ${chatKey}.`);
+    }
     return {
       scope: "chat_keys",
       targets: dedupeTargets(
-        normalizedChatKeys.map((chatKey) => {
+        normalizedChatKeys.flatMap((chatKey) => {
           const visible = visibleLookup.get(chatKey);
-          return {
+          if (!visible) return [];
+          return [{
             title: visible?.title ?? chatKey,
             chatKey,
             unreadCount: visible?.unreadCount ?? 0,
-          };
+          }];
         }),
         args.maxChats,
       ),
+      warnings,
     };
   }
 
@@ -96,6 +103,7 @@ export function selectAuditTargets(args: {
         })),
         args.maxChats,
       ),
+      warnings,
     };
   }
 
@@ -109,6 +117,7 @@ export function selectAuditTargets(args: {
       })),
       args.maxChats,
     ),
+    warnings,
   };
 }
 
@@ -134,6 +143,7 @@ export async function auditConversations(
     unreadChats,
     searchResults,
   });
+  warnings.push(...selection.warnings);
   const chats = selection.targets;
 
   const items = [];
